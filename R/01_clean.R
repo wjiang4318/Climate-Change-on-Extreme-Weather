@@ -88,7 +88,7 @@ Carolina_weather <- Carolina_weather %>%
   mutate(Fog = ifelse(Fog == 1 | Heavy_Fog == 1, 1, 0)) %>% select(-Heavy_Fog)
 
 summary(California_weather)
-# ~30% of days had fog, 0.08% thunder, 37% smoke, 15.5% rain.
+# ~30% of days had fog, 0.83% thunder, 37% smoke, 15.5% rain.
 # Mean precipitation 0.026 in/day; mean max temp 70.7F, mean min temp 57.4F.
 summary(Carolina_weather)
 # ~42.7% fog, 14.3% thunder, 25.9% smoke, 32.8% rain.
