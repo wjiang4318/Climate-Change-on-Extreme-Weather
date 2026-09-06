@@ -21,14 +21,13 @@ and wildfires.
 
 ## Findings
 
-**San Diego, wildfires:** supported. Rainfall predicts wildfire storms - wetter
-years have fewer of them.
+**San Diego, wildfires:** supported. Wetter years have fewer wildfire storms.
 
 **Both regions, precipitation and wind storms:** not supported. Neither rain
-days nor total rainfall predicts storm counts in either region.
+days nor total rainfall predicts storm counts.
 
-Either way the effects are small. Local weather explains a limited share of
-extreme weather activity, and the larger drivers are not in this data.
+Local weather explains a limited share of extreme weather activity, and the
+larger drivers are not in this data.
 
 ## Data
 
@@ -47,22 +46,18 @@ with begin and end dates.
 
 ## Method
 
-Station data is reduced to the relevant variables, overlapping condition flags
-are collapsed, and storm events are deduplicated. Storm events are then matched 
-to calendar days with an interval join, and everything is aggregated 
-to yearly totals.
+Station data is reduced to the relevant variables and overlapping condition
+flags are collapsed. Storm events are deduplicated, since the same storm is
+logged once per reporting office, then matched to calendar days with an
+interval join. Everything is aggregated to yearly totals.
 
-Both outcomes are yearly counts - whole numbers that cannot go below zero - so
-a linear model is only a baseline. Count models (Poisson, negative binomial)
-model the log of the expected count, which keeps predictions positive and makes
-effects multiplicative rather than additive.
-
-The dispersion ratio is the variance of the counts divided by their mean.
-Poisson assumes the two are equal; a ratio well above 1 means the counts are
-more spread out than it allows, and its standard errors are understated. Each
-model is fit as OLS first and checked with residual, QQ, and Shapiro-Wilk
-diagnostics, then tested for dispersion. If the ratio exceeds 1.5, negative
-binomial is reported instead.
+Both outcomes are yearly counts, so ordinary least squares serves only as a
+baseline. Each model is fit as OLS first and checked with residual, QQ, and
+Shapiro-Wilk diagnostics. Where those fail, the model is refit as a Poisson GLM
+and tested for overdispersion, the ratio of observed variance to what Poisson
+assumes. A ratio above 1.5 means the standard errors are understated, so
+negative binomial is reported instead. San Diego's precipitation-storm model
+passes its diagnostics and stays OLS; the other two are negative binomial.
 
 ## Results
 
@@ -77,40 +72,41 @@ wildfire exposure.
 
 ### Wildfire storms, San Diego
 
-To test whether smoke days, temperature, or rainfall predict wildfire storms,
-yearly wildfire counts for 1996-2023 (28 years) were regressed on all three
-using a negative binomial model, chosen because the counts vary about four times
-more than their mean. Only rainfall mattered: each additional inch of annual
-precipitation is associated with roughly 13% fewer wildfire storms
-(coefficient -0.139, p = 0.002). Smoke days (p = 0.92) and average temperature
-(p = 0.10) showed no significant effect.
+Yearly wildfire counts for 1996-2023 (28 years) were regressed on smoke days,
+average temperature, and total rainfall using a negative binomial model, chosen
+because the counts vary about four times more than their mean.
+
+Only rainfall mattered. Each additional inch of annual precipitation is
+associated with roughly 13% fewer wildfire storms (coefficient -0.139,
+p = 0.002). Smoke days (p = 0.92) and average temperature (p = 0.10) showed no
+significant effect.
+
+Each panel below fits a single predictor on its own; the reported model fits
+all three together.
 
 ![Wildfire predictors](output/figures/wildfire_scatter.png)
-
-Each panel fits a single predictor on its own to show its individual influence;
-the reported model fits all three together.
 
 **Why 1996.** NOAA only catalogues all event types from that year, so wildfire
 has no earlier rows.
 
 ### Precipitation and wind storms, both regions
 
-To test whether rain days or total rainfall predict rain- and wind-driven
-storms, yearly counts of heavy rain, high wind, thunderstorm wind, and strong
-wind events were regressed on both predictors, each region separately. San Diego
-used ordinary least squares (17 years, 1996-2012), since its counts vary no more
-than expected; Charleston used a negative binomial (47 years, 1955-2012).
-Neither predictor was significant in either region - San Diego R² = 0.066
-(p = 0.34 and p = 0.67), Charleston p = 0.23 and p = 0.93.
+Yearly counts of heavy rain, high wind, thunderstorm wind, and strong wind
+events were regressed on rain days and total rainfall, each region separately.
+San Diego used OLS (17 years, 1996-2012); Charleston used negative binomial
+(47 years, 1955-2012).
+
+Neither predictor was significant in either region: San Diego p = 0.34 and
+p = 0.67 (R² = 0.066), Charleston p = 0.23 and p = 0.93.
+
+The regions are plotted separately because storm events are logged per
+reporting zone, and San Diego spans 12 against Charleston's 2, so its counts
+run higher for reasons of geography. Fit lines are OLS in all four panels;
+Charleston's reported model is negative binomial.
 
 ![San Diego precipitation-storm predictors](output/figures/precipitation_scatter_california.png)
 
 ![Charleston precipitation-storm predictors](output/figures/precipitation_scatter_carolina.png)
-
-The regions are plotted separately because storm events are logged per reporting
-zone. Their windows differ too: only thunderstorm wind is recorded before
-1996, so San Diego has no usable earlier years. Fit lines are OLS in all four
-panels; Charleston's reported model is negative binomial.
 
 Additional figures (weather event counts, storm-day severity, model fit) are
 written to `output/figures/` when the scripts run.
@@ -118,28 +114,24 @@ written to `output/figures/` when the scripts run.
 ## Limitations
 
 **Reporting coverage changes over time.** NOAA records grow denser across the
-series as practices change, so part of any trend is artifact. For example, 
-the sharp decline in recorded rain days after 2012 likely reflects reporting 
-changes rather than actual weather patterns, compounded
-by substantial missing information in earlier records.
+series as practices change, so part of any trend is artifact. The sharp decline
+in recorded rain days after 2012 reflects reporting changes rather than
+weather, and earlier records carry substantial gaps.
 
+**Granularity mismatch.** Weather data captures daily station conditions while
+storm events log large-scale severe occurrences, so the two are not measuring
+the same thing.
 
-**Granularity mismatch.** Weather comes from one station; storm events are
-logged by county and zone. A storm affecting several zones contributes several
-counts, so the outcome is closer to storm-zone reports than distinct storms.
-This is not symmetric between regions: San Diego's precipitation-storm events
-span 12 zones against Charleston's 2, which rules out comparing raw counts
-across the two.
-
-**Narrow predictors.** Wind speed had too much missing data to use and is
-likely a stronger driver of wind-related storms than anything included here.
+**Narrow predictors.** Four variables explain storm counts here. Wind speed,
+likely a stronger driver of wind-related storms, had too much missing data to
+include.
 
 **Reverse causation.** Smoke days are partly caused by the wildfires they are
-used to predict, so that coefficient resists causal reading either way.
+used to predict, so that coefficient resists causal reading.
 
-**Small samples.** Yearly aggregation leaves 17 to 47 observations per model,
-which limits power. San Diego's precipitation-storm null in particular rests on
-thin evidence, at 17 years with two predictors.
+**Small samples.** Yearly aggregation leaves 17 to 47 observations per
+precipitation model, which limits power. San Diego's null in particular rests
+on thin evidence.
 
 ## Running it
 
