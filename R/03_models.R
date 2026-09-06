@@ -5,9 +5,29 @@
 #   Section 2: rain days and total precipitation vs. precipitation/wind storm
 #              counts (both regions)
 #
-# Both outcomes are yearly counts, so the OLS fits are kept only as a baseline
-# and the count models are the ones to report.
+# Both outcomes are yearly counts. Each model is fit as OLS first, then tested
+# for overdispersion; If the ratio exceeds 1.5 a negative binomial is
+# reported instead. San Diego's precipitation model is the one case that stays
+# OLS, because its dispersion ratio is 1.1.
 # -----------------------------------------------------------------------------
+
+# Shared figure style, so every figure here reads as one set. Fit and reference
+# lines use ink, not a second hue - they annotate the data, not add a series.
+FIG_DPI   <- 300
+VIZ_POINT <- "#2a78d6"
+VIZ_INK   <- "#52514e"
+VIZ_BAND  <- "grey85"
+
+theme_report <- function(base_size = 11) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      panel.grid.minor = element_blank(),
+      plot.title       = element_text(face = "bold"),
+      plot.subtitle    = element_text(color = "grey40", margin = margin(b = 10)),
+      plot.caption     = element_text(color = "grey40", hjust = 0),
+      axis.title       = element_text(color = "grey20")
+    )
+}
 
 # Residuals-vs-fitted plot, QQ plot, and Shapiro-Wilk test for an lm object.
 check_ols <- function(model, region) {
@@ -46,11 +66,10 @@ smoke_days_california <- California_weather %>%
   summarize(Smoke_Days = sum(Smoke, na.rm = TRUE), .groups = "drop")
 
 # --- Coverage check ----------------------------------------------------------
-# wildfire_storms_california only lists years with at least one recorded
-# wildfire. Merging from it (inner-join style) would drop every zero-wildfire
-# year and truncate the outcome, biasing the count model toward always
-# predicting >= 1 event. Merging from smoke_days_california instead (all.x)
-# and filling missing counts with 0 keeps those zero years in the data.
+# NOAA only records all event types from 1996, so wildfire has no rows before
+# then. Filling those years with 0 would code unmeasured as observed zero for
+# 48 of 77 years, hence the 1996+ cut; the zero-fill below is now just a guard.
+# 2024 is dropped as partial (316 of 365 days).
 cat("Wildfire event years:",
     min(wildfire_storms_california$Year), "-",
     max(wildfire_storms_california$Year),
@@ -61,7 +80,7 @@ california_combined_data <- smoke_days_california %>%
   merge(yearly_precipitation_Cali,  by = "Year", all.x = TRUE) %>%
   merge(temperature_california,     by = "Year", all.x = TRUE) %>%
   mutate(Wildfire_Storm_Count = ifelse(is.na(Wildfire_Storm_Count), 0, Wildfire_Storm_Count)) %>%
-  filter(Smoke_Days > 0)
+  filter(Smoke_Days > 0, Year >= 1996, Year < 2024)
 
 # 1a. OLS baseline ------------------------------------------------------------
 
@@ -69,37 +88,49 @@ california_model <- lm(Wildfire_Storm_Count ~ Smoke_Days + Avg_Temperature + Tot
                        data = california_combined_data)
 summary(california_model)
 
-plot_wildfire_scatter <- function(x_variable, x_label) {
-  ggplot(california_combined_data, aes(x = !!sym(x_variable), y = Wildfire_Storm_Count)) +
-    geom_point(color = "blue") +
-    geom_smooth(method = "lm", color = "red") +
-    labs(title = paste("Wildfire Storm Count vs", x_label, "(San Diego)"),
-         x = x_label, y = "Wildfire Storm Count") +
-    theme_minimal()
-}
+# All three predictors, faceted in a row rather than stacked.
+#   - order runs smoke days, temperature, precipitation
+wildfire_long <- california_combined_data %>%
+  pivot_longer(
+    cols = c(Smoke_Days, Avg_Temperature, Total_Precipitation),
+    names_to = "Predictor",
+    values_to = "Value"
+  ) %>%
+  mutate(Predictor = factor(
+    Predictor,
+    levels = c("Smoke_Days", "Avg_Temperature", "Total_Precipitation"),
+    labels = c("Smoke days", "Average temperature (\u00b0F)", "Total precipitation (in)")
+  ))
 
-wildfire_panel <- (plot_wildfire_scatter("Smoke_Days", "Smoke Days") /
-                     plot_wildfire_scatter("Avg_Temperature", "Average Temperature (\u00B0F)") /
-                     plot_wildfire_scatter("Total_Precipitation", "Total Precipitation (in)")) +
-  plot_layout(guides = "collect")
+wildfire_panel <- ggplot(wildfire_long, aes(x = Value, y = Wildfire_Storm_Count)) +
+  geom_point(color = VIZ_POINT, alpha = 0.7, size = 1.8) +
+  geom_smooth(method = MASS::glm.nb, formula = y ~ x,
+              color = VIZ_INK, fill = VIZ_BAND, linewidth = 0.6) +
+  facet_wrap(~ Predictor, scales = "free_x", strip.position = "bottom") +
+  expand_limits(y = 0) +
+  labs(title = "Wildfire storm counts against each predictor individually, San Diego",
+       subtitle = "Negative binomial fits, one predictor at a time",
+       x = NULL, y = "Wildfire storm count") +
+  theme_report() +
+  theme(
+    # The bottom strip occupies the x-axis title slot, so style it as one.
+    strip.placement = "outside",
+    strip.text      = element_text(size = 11, color = "grey20",
+                                   margin = margin(t = 3)),
+    panel.spacing   = grid::unit(1.4, "lines")
+  )
 
 wildfire_panel
-ggsave("output/figures/wildfire_scatter.png", wildfire_panel, width = 8, height = 10, dpi = 200)
+ggsave("output/figures/wildfire_scatter.png", wildfire_panel,
+       width = 9, height = 4, dpi = FIG_DPI)
 
-# 1b. OLS assumptions ---------------------------------------------------------
-
+# 1b. OLS baseline diagnostics ------------------------------------------------
 check_ols(california_model, "Wildfire OLS")
-# Slight heteroscedasticity, centered near zero. Tails deviate a little in the
-# QQ plot; the Shapiro-Wilk test does not reject normality.
-
-# Stepwise AIC drops Smoke_Days, but only improves AIC by about 2, which is not
-# a strong enough gap to remove the variable the hypothesis is about.
-best_model <- step(california_model, direction = "both", trace = TRUE)
+# Residuals pass on the 1996+ window (Shapiro W = 0.95, p = 0.24); 
 
 # 1c. Poisson GLM and overdispersion ------------------------------------------
-# Poisson assumes variance = mean. The ratio below tests that: well above 1
-# means the standard errors are understated and negative binomial is the right
-# model. Normality tests do not apply to GLM residuals, so they are not run.
+# Poisson assumes variance = mean; a ratio well above 1 means the standard
+# errors are understated. Normality tests do not apply to GLM residuals.
 
 california_model_glm <- glm(
   Wildfire_Storm_Count ~ Smoke_Days + Avg_Temperature + Total_Precipitation,
@@ -132,15 +163,16 @@ california_combined_data$Predicted_Count <-
 
 plot_wildfire_fit <- ggplot(california_combined_data,
                             aes(x = Wildfire_Storm_Count, y = Predicted_Count)) +
-  geom_point(color = "blue") +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Predicted vs Observed Wildfire Storm Count (California)",
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              color = VIZ_INK, linewidth = 0.5) +
+  geom_point(color = VIZ_POINT, alpha = 0.7, size = 1.8) +
+  labs(title = "Predicted vs observed wildfire storm count, San Diego",
        subtitle = "Dashed line is perfect prediction",
-       x = "Observed Count", y = "Predicted Count") +
-  theme_minimal()
+       x = "Observed count", y = "Predicted count") +
+  theme_report()
 
 plot_wildfire_fit
-ggsave("output/figures/wildfire_fit.png", plot_wildfire_fit, width = 7, height = 5, dpi = 200)
+ggsave("output/figures/wildfire_fit.png", plot_wildfire_fit, width = 7, height = 5, dpi = FIG_DPI)
 
 # =============================================================================
 # SECTION 2: Precipitation and wind storms, both regions
@@ -168,114 +200,144 @@ california_precipitation_data <-
   summarize_precipitation_storms(California_storm_unique, precipitation_related_events) %>%
   merge(summarize_rain_days(California_weather), by = "Year", all.x = TRUE) %>%
   merge(yearly_precipitation_Cali, by = "Year", all.x = TRUE) %>%
-  filter(Rain_Days > 0, Year <= 2012, Precipitation_Storm_Count > 2)
-# The count > 2 filter drops early years where California records only one or
-# two storms, which reads as thin reporting rather than a quiet year. 
+  filter(Rain_Days > 0, Year <= 2012, Year >= 1996)
+# Cut at 1996 as in section 1: Heavy Rain, High Wind and Strong Wind have no
+# records before then. 
 
 carolina_precipitation_data <-
   summarize_precipitation_storms(Carolina_storm_unique, precipitation_related_events) %>%
   merge(summarize_rain_days(Carolina_weather), by = "Year", all.x = TRUE) %>%
   merge(yearly_precipitation_Carolina, by = "Year", all.x = TRUE) %>%
   filter(Rain_Days > 0, Year <= 2012)
+# LIMITATION, not cut to 1996: only Thunderstorm Wind is recorded before then.
+# Kept for sample size; 1996+ leaves n = 17 and the result is null either way.
 
 # 2a. OLS baselines -----------------------------------------------------------
 
 california_precipitation_model <- lm(
-  Precipitation_Storm_Count ~ Rain_Days + Total_Precipitation,
+  Precipitation_Storm_Count ~ Total_Precipitation + Rain_Days,
   data = california_precipitation_data
 )
 summary(california_precipitation_model)
 
 carolina_precipitation_model <- lm(
-  Precipitation_Storm_Count ~ Rain_Days + Total_Precipitation,
+  Precipitation_Storm_Count ~ Total_Precipitation + Rain_Days,
   data = carolina_precipitation_data
 )
 summary(carolina_precipitation_model)
 
-plot_precip_scatter <- function(data, x_variable, x_label, region) {
+# One figure per region
+plot_precip_scatter <- function(data, x_variable, x_label, y_max,
+                                jitter_width, show_y_title = TRUE) {
   ggplot(data, aes(x = !!sym(x_variable), y = Precipitation_Storm_Count)) +
-    geom_point(color = "blue") +
-    geom_smooth(method = "lm", color = "red", se = TRUE) +
-    labs(title = paste0("Precipitation-Related Storms vs ", x_label, " (", region, ")"),
-         x = x_label, y = "Precipitation Storm Count") +
-    theme_minimal()
+    geom_jitter(color = VIZ_POINT, alpha = 0.7, size = 1.8,
+                height = 0, width = jitter_width) +
+    geom_smooth(method = "lm", formula = y ~ x,
+                color = VIZ_INK, fill = VIZ_BAND, linewidth = 0.6) +
+    coord_cartesian(ylim = c(0, y_max)) +
+    labs(x = x_label,
+         y = if (show_y_title) "Precipitation storm count" else NULL) +
+    theme_report()
 }
 
-precip_panel <- (
-  plot_precip_scatter(california_precipitation_data, "Rain_Days", "Rain Days", "California") /
-    plot_precip_scatter(carolina_precipitation_data,   "Rain_Days", "Rain Days", "South Carolina") /
-    plot_precip_scatter(california_precipitation_data, "Total_Precipitation", "Total Precipitation (in)", "California") /
-    plot_precip_scatter(carolina_precipitation_data,   "Total_Precipitation", "Total Precipitation (in)", "South Carolina")
-) + plot_layout(guides = "collect")
+build_precip_panel <- function(data, subtitle) {
+  y_max <- max(data$Precipitation_Storm_Count) + 1
+  rain   <- plot_precip_scatter(data, "Rain_Days", "Rain days",
+                                y_max, jitter_width = 0.5)
+  precip <- plot_precip_scatter(data, "Total_Precipitation",
+                                "Total precipitation (in)",
+                                y_max, jitter_width = 0.15, show_y_title = FALSE)
+  (rain | precip) + plot_annotation(
+    title = "Neither rain days nor total precipitation predicts storm counts",
+    subtitle = subtitle,
+    caption = paste("Shaded bands are 95% confidence intervals; both flare wide",
+                    "where the data thin out. Neither slope is distinguishable",
+                    "from flat."),
+    theme = theme_report()
+  )
+}
 
-precip_panel
-ggsave("output/figures/precipitation_scatter.png", precip_panel, width = 8, height = 13, dpi = 200)
+precip_panel_california <- build_precip_panel(
+  california_precipitation_data,
+  sprintf("Southern California, 1996-2012 (n = %d)",
+          nrow(california_precipitation_data))
+)
+precip_panel_carolina <- build_precip_panel(
+  carolina_precipitation_data,
+  sprintf("South Carolina, 1955-2012 (n = %d)",
+          nrow(carolina_precipitation_data))
+)
 
-# 2b. OLS assumptions ---------------------------------------------------------
+precip_panel_california
+precip_panel_carolina
 
-check_ols(california_precipitation_model, "California")
+ggsave("output/figures/precipitation_scatter_california.png",
+       precip_panel_california, width = 9, height = 4, dpi = FIG_DPI)
+ggsave("output/figures/precipitation_scatter_carolina.png",
+       precip_panel_carolina, width = 9, height = 4, dpi = FIG_DPI)
+
+# 2b. OLS baseline diagnostics ------------------------------------------------
+
+check_ols(california_precipitation_model, "Southern California")
 # Residuals look random; mild deviation in the tails; normality not rejected.
 
 check_ols(carolina_precipitation_model, "South Carolina")
-# Clear tail deviation and outliers; normality rejected. Count model below.
+# Clear tail deviation and outliers; normality rejected.
 
-# 2c. Negative binomial for South Carolina ------------------------------------
+# 2c. Overdispersion test and model choice ------------------------------------
+# Both regions tested, same 1.5 threshold as 1d.
+dispersion_ratio <- function(formula, data) {
+  m <- glm(formula, data = data, family = poisson)
+  sum(residuals(m, type = "pearson")^2) / m$df.residual
+}
 
-carolina_poisson <- glm(Precipitation_Storm_Count ~ Total_Precipitation + Rain_Days,
-                        data = carolina_precipitation_data, family = poisson)
-overdispersion_sc <- sum(residuals(carolina_poisson, type = "pearson")^2) /
-  carolina_poisson$df.residual
-cat("South Carolina precipitation-storm overdispersion ratio:",
-    round(overdispersion_sc, 2), "\n")
+precip_formula <- Precipitation_Storm_Count ~ Total_Precipitation + Rain_Days
 
-carolina_precipitation_model_nb <- glm.nb(
-  Precipitation_Storm_Count ~ Total_Precipitation + Rain_Days,
-  data = carolina_precipitation_data
-)
-summary(carolina_precipitation_model_nb)
+overdispersion_ca_precip <- dispersion_ratio(precip_formula, california_precipitation_data)
+overdispersion_sc        <- dispersion_ratio(precip_formula, carolina_precipitation_data)
+cat("Precipitation-storm overdispersion - Southern California:",
+    round(overdispersion_ca_precip, 2),
+    "| South Carolina:", round(overdispersion_sc, 2), "
+")
 
-# Deviance residuals against fitted values. No QQ plot or Shapiro test: GLM
-# residuals are not expected to be normal, so those diagnostics say nothing.
-plot(fitted(carolina_precipitation_model_nb),
-     residuals(carolina_precipitation_model_nb, type = "deviance"),
+# California stays OLS: ratio ~1.1, so there is nothing for a count model to fix.
+california_precipitation_final_model <- california_precipitation_model
+
+if (overdispersion_sc > 1.5) {
+  cat("South Carolina overdispersed - fitting negative binomial.
+")
+  carolina_precipitation_final_model <- glm.nb(precip_formula,
+                                               data = carolina_precipitation_data)
+} else {
+  cat("South Carolina ratio near 1 - Poisson is adequate.
+")
+  carolina_precipitation_final_model <- glm(precip_formula,
+                                            data = carolina_precipitation_data,
+                                            family = poisson)
+}
+summary(carolina_precipitation_final_model)
+
+# GLM residuals are not expected to be normal, so no QQ plot or Shapiro test.
+plot(fitted(carolina_precipitation_final_model),
+     residuals(carolina_precipitation_final_model, type = "deviance"),
      pch = 19, col = "grey50",
      main = "Deviance Residuals vs Fitted (Negative Binomial, SC)",
      xlab = "Fitted count", ylab = "Deviance residual")
 abline(h = 0, col = "red")
 
 carolina_precipitation_data$Predicted_NB <-
-  predict(carolina_precipitation_model_nb, type = "response")
+  predict(carolina_precipitation_final_model, type = "response")
 
-plot_nb_precip <- ggplot(carolina_precipitation_data,
-                         aes(x = Total_Precipitation, y = Precipitation_Storm_Count)) +
-  geom_point(color = "blue") +
-  geom_line(aes(y = Predicted_NB), color = "red", linewidth = 1) +
-  labs(title = "Negative Binomial: Total Precipitation vs Storm Count (SC)",
-       x = "Total Precipitation (in)", y = "Observed and Predicted Storm Count") +
-  theme_minimal()
-
-plot_nb_rain <- ggplot(carolina_precipitation_data,
-                       aes(x = Rain_Days, y = Precipitation_Storm_Count)) +
-  geom_point(color = "blue") +
-  geom_line(aes(y = Predicted_NB), color = "red", linewidth = 1) +
-  labs(title = "Negative Binomial: Rain Days vs Storm Count (SC)",
-       x = "Rain Days", y = "Observed and Predicted Storm Count") +
-  theme_minimal()
-
-nb_panel <- (plot_nb_precip / plot_nb_rain) + plot_layout(guides = "collect")
-nb_panel
-ggsave("output/figures/carolina_nb_fit.png", nb_panel, width = 8, height = 8, dpi = 200)
+# Fitted values span far less than observed counts - the null result, numerically.
+cat("Observed range:", range(carolina_precipitation_data$Precipitation_Storm_Count),
+    "| fitted range:", round(range(carolina_precipitation_data$Predicted_NB), 1), "\n")
 
 # 2d. Log-transformed OLS (kept for comparison) -------------------------------
 # Tried before the negative binomial. Still OLS on a count outcome, and the
 # residuals stay non-normal, so the NB model above is the one to report.
 
-carolina_precipitation_data <- carolina_precipitation_data %>%
-  mutate(Log_Total_Precipitation = log(Total_Precipitation),
-         Log_Rain_Days = log(Rain_Days))
-
 carolina_precipitation_model_log <- lm(
-  Precipitation_Storm_Count ~ Log_Total_Precipitation + Log_Rain_Days,
+  Precipitation_Storm_Count ~ log(Total_Precipitation) + log(Rain_Days),
   data = carolina_precipitation_data
 )
 summary(carolina_precipitation_model_log)

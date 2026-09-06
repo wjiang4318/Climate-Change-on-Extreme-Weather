@@ -4,3 +4,6 @@
 .Ruserdata
 
 !output/figures/.gitkeep
+
+# Regenerated on every run
+Rplots.pdf

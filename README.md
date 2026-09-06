@@ -1,133 +1,160 @@
-# Climate Change on Extreme Weather
+# Climate Change and Extreme Weather Events
 
-Analysis of how weather patterns relate to extreme storm events in two
-climatically distinct regions — San Diego, California (Mediterranean climate)
-and Charleston, South Carolina (humid subtropical climate) — using NOAA daily
-weather station records and NOAA Storm Events data.
+Do local weather conditions predict extreme weather events? An analysis of NOAA
+daily station records and storm event data for two climatically distinct
+regions: San Diego, California (Mediterranean) and Charleston, South Carolina
+(humid subtropical).
+
+## Motivation
+
+Rising temperatures, shifting rainfall, and intensifying storms are established
+indicators of climate change, and research has linked them to increases in
+wildfires and severe storms at a global scale. Less is understood about how
+these relationships hold locally. This project tests whether the weather
+variables a single station records (temperature, rain days, smoke days, total
+precipitation) predict the extreme events logged in the same area.
+
+The two regions were chosen for contrast. The hypothesis was that Charleston's
+wetter climate would show a link between rainfall and precipitation-driven
+storms, while San Diego's dry climate would show a link between dry conditions
+and wildfires.
+
+## Findings
+
+**San Diego, wildfires:** supported. Rainfall predicts wildfire storms - wetter
+years have fewer of them.
+
+**Both regions, precipitation and wind storms:** not supported. Neither rain
+days nor total rainfall predicts storm counts in either region.
+
+Either way the effects are small. Local weather explains a limited share of
+extreme weather activity, and the larger drivers are not in this data.
 
 ## Data
 
-Source: [NOAA Climate Online Database](https://www.ncdc.noaa.gov/cdo-web/).
+[NOAA Climate Online Database](https://www.ncdc.noaa.gov/cdo-web/), four files:
 
-| File | Description |
-|---|---|
-| `data/raw/South Cali_daily_1945.csv` | Daily weather station records, San Diego, CA (1945–present) |
-| `data/raw/South Carolina_daily_1937.csv` | Daily weather station records, Charleston, SC (1937–present) |
-| `data/raw/South California Storm Event.csv` | NOAA Storm Events records, San Diego area |
-| `data/raw/South Carolina Storm Event.csv` | NOAA Storm Events records, Charleston area |
+| File | Coverage |
+| --- | --- |
+| `South Cali_daily_1945.csv` | San Diego daily station records, 1945 to present (29,167 days) |
+| `South Carolina_daily_1937.csv` | Charleston daily station records, 1937 to present (32,033 days) |
+| `South California Storm Event.csv` | San Diego storm events, 1950 onward |
+| `South Carolina Storm Event.csv` | Charleston storm events, 1950 onward |
 
-Daily station data includes precipitation, temperature, and weather-condition
-flags (fog, smoke, thunder, rain, etc.). Storm event data logs discrete
-severe-weather occurrences (wildfires, high wind, thunderstorm wind, heavy
-rain) with begin/end dates and event type.
+Daily records carry precipitation, temperature, and condition flags (fog,
+smoke, thunder, rain). Storm events log discrete severe-weather occurrences
+with begin and end dates.
 
-## Repo structure
+## Method
 
-```
-R/
-  01_clean.R    Load raw data, standardize columns, flag storm days
-  02_eda.R      Yearly summaries and exploratory figures
-  03_models.R   Regression models: wildfire storms and precipitation/wind storms
-data/raw/       Raw NOAA CSVs (see Data above)
-output/figures/ Generated plots (PNG), written by 02_eda.R and 03_models.R
-```
+Station data is reduced to the relevant variables, overlapping condition flags
+are collapsed, and storm events are deduplicated. Storm events are then matched 
+to calendar days with an interval join, and everything is aggregated 
+to yearly totals.
 
-Scripts are meant to be run in order — `02_eda.R` and `03_models.R` assume the
-objects created by the previous script(s) are already in the environment:
+Both outcomes are yearly counts - whole numbers that cannot go below zero - so
+a linear model is only a baseline. Count models (Poisson, negative binomial)
+model the log of the expected count, which keeps predictions positive and makes
+effects multiplicative rather than additive.
 
-```r
-source("R/01_clean.R")
-source("R/02_eda.R")
-source("R/03_models.R")
-```
-
-## Method summary
-
-**Cleaning (`01_clean.R`)** — Station data is reduced from NOAA's full column
-set to the variables relevant here (precipitation, temperature, weather-type
-flags), columns with excessive missingness are dropped, and overlapping
-weather-type flags (e.g. Fog / Heavy Fog) are collapsed. Storm events are
-deduplicated (the same storm is logged once per reporting office with minor
-field differences) and joined against the daily station data to flag which
-calendar days fall inside a storm event.
-
-**Exploratory analysis (`02_eda.R`)** — Yearly aggregates (total
-precipitation, average temperature, weather-event counts, storm-day severity)
-are computed for both regions and visualized as comparative time series.
-
-**Modeling (`03_models.R`)** — Two regression questions:
-1. Do smoke days, temperature, and precipitation predict yearly wildfire
-   storm counts in California?
-2. Do rain days and total precipitation predict yearly precipitation/wind
-   storm counts in either region?
-
-Each is fit first as OLS, checked against residual/QQ diagnostics and a
-Shapiro-Wilk normality test, and refit as a Poisson or negative binomial GLM
-when the outcome is an overdispersed count or the OLS residuals fail
-normality.
-
-## Requirements
-
-R (4.x) with: `dplyr`, `tidyr`, `ggplot2`, `lubridate`, `patchwork`, `MASS`,
-`olsrr`.
+The dispersion ratio is the variance of the counts divided by their mean.
+Poisson assumes the two are equal; a ratio well above 1 means the counts are
+more spread out than it allows, and its standard errors are understated. Each
+model is fit as OLS first and checked with residual, QQ, and Shapiro-Wilk
+diagnostics, then tested for dispersion. If the ratio exceeds 1.5, negative
+binomial is reported instead.
 
 ## Results
 
-### Regional climate patterns
+### Regional patterns
 
-South Carolina's humid subtropical climate shows higher, more variable
-precipitation and temperature, with more fog, rain, and thunder days.
-Southern California's Mediterranean climate is drier and more thermally
-stable, with far more smoke days — consistent with its wildfire exposure.
-Both regions trend warmer over the multi-decade record.
+Charleston is wetter and more variable, with 0.14 in of precipitation per day
+against San Diego's 0.026, and rain on 33% of days against 16%. San Diego
+records smoke on 37% of days against Charleston's 26%, consistent with its
+wildfire exposure.
 
 ![Yearly precipitation and temperature](output/figures/climate_trends.png)
-![Yearly weather event counts](output/figures/weather_events.png)
-![Storm-day severity](output/figures/storm_severity.png)
 
-### Wildfire storms (California)
+### Wildfire storms, San Diego
 
-Yearly wildfire storm counts (NOAA Storm Events) regressed against smoke
-days, average temperature, and total precipitation, using all years with
-recorded smoke days — including years with zero wildfire storms (see the
-methodological note below on why that matters).
+To test whether smoke days, temperature, or rainfall predict wildfire storms,
+yearly wildfire counts for 1996-2023 (28 years) were regressed on all three
+using a negative binomial model, chosen because the counts vary about four times
+more than their mean. Only rainfall mattered: each additional inch of annual
+precipitation is associated with roughly 13% fewer wildfire storms
+(coefficient -0.139, p = 0.002). Smoke days (p = 0.92) and average temperature
+(p = 0.10) showed no significant effect.
 
-- **Total precipitation** is the only significant predictor (negative
-  binomial GLM: coefficient −0.19, p = 0.010) — more rain in a year is
-  associated with fewer wildfire storms.
-- **Smoke days and average temperature are not significant** predictors once
-  zero-wildfire years are included.
-- The response is heavily overdispersed (ratio ≈ 8), so a negative binomial
-  GLM is used instead of OLS/Poisson.
+![Wildfire predictors](output/figures/wildfire_scatter.png)
 
-![Wildfire storm predictors](output/figures/wildfire_scatter.png)
-![Wildfire model fit](output/figures/wildfire_fit.png)
+Each panel fits a single predictor on its own to show its individual influence;
+the reported model fits all three together.
 
-### Precipitation/wind storms (both regions)
+**Why 1996.** NOAA only catalogues all event types from that year, so wildfire
+has no earlier rows.
 
-Yearly precipitation/wind storm counts regressed against rain days and total
-precipitation (years capped at 2012, when rain-flag recording becomes
-unreliable at both stations — see `02_eda.R`).
+### Precipitation and wind storms, both regions
 
-- Neither rain days nor total precipitation significantly predicts storm
-  counts in California (R² = 0.07) or South Carolina (R² = 0.03).
-- South Carolina's response is also overdispersed; a negative binomial
-  refit doesn't change the conclusion.
-- Rainfall volume alone doesn't explain these storm counts well — other
-  unmeasured factors (e.g. wind speed, not available in this dataset) are
-  likely bigger drivers.
+To test whether rain days or total rainfall predict rain- and wind-driven
+storms, yearly counts of heavy rain, high wind, thunderstorm wind, and strong
+wind events were regressed on both predictors, each region separately. San Diego
+used ordinary least squares (17 years, 1996-2012), since its counts vary no more
+than expected; Charleston used a negative binomial (47 years, 1955-2012).
+Neither predictor was significant in either region - San Diego R² = 0.066
+(p = 0.34 and p = 0.67), Charleston p = 0.23 and p = 0.93.
 
-![Precipitation-storm predictors](output/figures/precipitation_scatter.png)
-![South Carolina negative binomial fit](output/figures/carolina_nb_fit.png)
+![San Diego precipitation-storm predictors](output/figures/precipitation_scatter_california.png)
 
-### Methodological note
+![Charleston precipitation-storm predictors](output/figures/precipitation_scatter_carolina.png)
 
-An earlier version of the wildfire model built its modeling frame by joining
-onto the wildfire-event table itself, which only contains years with at
-least one recorded wildfire storm. That silently excluded every zero-wildfire
-year, truncating the response and inflating both R² (0.39 vs. the corrected
-0.077) and the apparent significance of average temperature as a predictor.
-The corrected model joins onto the full set of years with recorded smoke
-days (77 vs. 29 rows), explicitly filling missing wildfire counts with 0 —
-a reminder that the direction of a join can bias a regression as much as any
-modeling choice downstream of it.
+The regions are plotted separately because storm events are logged per reporting
+zone. Their windows differ too: only thunderstorm wind is recorded before
+1996, so San Diego has no usable earlier years. Fit lines are OLS in all four
+panels; Charleston's reported model is negative binomial.
+
+Additional figures (weather event counts, storm-day severity, model fit) are
+written to `output/figures/` when the scripts run.
+
+## Limitations
+
+**Reporting coverage changes over time.** NOAA records grow denser across the
+series as practices change, so part of any trend is artifact. For example, 
+the sharp decline in recorded rain days after 2012 likely reflects reporting 
+changes rather than actual weather patterns, compounded
+by substantial missing information in earlier records.
+
+
+**Granularity mismatch.** Weather comes from one station; storm events are
+logged by county and zone. A storm affecting several zones contributes several
+counts, so the outcome is closer to storm-zone reports than distinct storms.
+This is not symmetric between regions: San Diego's precipitation-storm events
+span 12 zones against Charleston's 2, which rules out comparing raw counts
+across the two.
+
+**Narrow predictors.** Wind speed had too much missing data to use and is
+likely a stronger driver of wind-related storms than anything included here.
+
+**Reverse causation.** Smoke days are partly caused by the wildfires they are
+used to predict, so that coefficient resists causal reading either way.
+
+**Small samples.** Yearly aggregation leaves 17 to 47 observations per model,
+which limits power. San Diego's precipitation-storm null in particular rests on
+thin evidence, at 17 years with two predictors.
+
+## Running it
+
+```r
+source("R/01_clean.R")   # load, clean, flag storm days
+source("R/02_eda.R")     # yearly summaries and exploratory figures
+source("R/03_models.R")  # regression models
+```
+
+Scripts run in order; each assumes the previous one's objects are in the
+environment. R 4.x with `dplyr` (>= 1.1), `tidyr`, `ggplot2`, `lubridate`,
+`patchwork`, `MASS`, `olsrr`.
+
+```
+R/               analysis scripts
+data/raw/        NOAA CSVs
+output/figures/  generated plots
+```
